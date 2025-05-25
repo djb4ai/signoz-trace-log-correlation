@@ -1,20 +1,27 @@
-const { NodeSDK } = require('@opentelemetry/sdk-node');
+// tracing.js
+'use strict'
+const process = require('process');
+const opentelemetry = require('@opentelemetry/sdk-node');
 const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
-const { OTLPTraceExporter } = require('@opentelemetry/exporter-otlp-http');
+const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http');
+const { Resource } = require('@opentelemetry/resources');
+const { SemanticResourceAttributes } = require('@opentelemetry/semantic-conventions');
 
 // Load environment variables
 require('dotenv').config();
 
-// Configure the OTLP exporter for SigNoz
-const traceExporter = new OTLPTraceExporter({
-  url: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || 'https://ingest.in.signoz.cloud:443/v1/traces',
-  headers: {
-    'signoz-access-token': process.env.SIGNOZ_ACCESS_TOKEN
-  }
-});
+// do not set headers in exporterOptions, the OTel spec recommends setting headers through ENV variables
+// https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/exporter.md#specifying-headers-via-environment-variables
 
-// Initialize the Node SDK
-const sdk = new NodeSDK({
+const exporterOptions = {
+  url: 'https://ingest.in.signoz.cloud:443/v1/traces',
+  headers: {
+    "signoz-access-token": "br2AU5y1pwXrbz8o4kz8ZvNZSL4sz0I0Cmy4"
+  }
+}
+
+const traceExporter = new OTLPTraceExporter(exporterOptions);
+const sdk = new opentelemetry.NodeSDK({
   traceExporter,
   instrumentations: [getNodeAutoInstrumentations({
     // Disable file system instrumentation to reduce noise
@@ -22,16 +29,19 @@ const sdk = new NodeSDK({
       enabled: false
     }
   })],
-  serviceName: 'nodejs-log-correlation-demo',
-  serviceVersion: '1.0.0'
+  resource: new Resource({
+    [SemanticResourceAttributes.SERVICE_NAME]: 'nodejs-log-correlation-demo',
+    [SemanticResourceAttributes.SERVICE_VERSION]: '1.0.0'
+  })
 });
 
-// Start the SDK
-sdk.start();
+// initialize the SDK and register with the OpenTelemetry API
+// this enables the API to record telemetry
+sdk.start()
 
 console.log('🚀 OpenTelemetry tracing initialized successfully');
 
-// Graceful shutdown
+// gracefully shut down the SDK on process exit
 process.on('SIGTERM', () => {
   sdk.shutdown()
     .then(() => console.log('✅ Tracing SDK shut down successfully'))

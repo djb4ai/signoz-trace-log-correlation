@@ -38,7 +38,7 @@ const ORDERS = {
 // Home endpoint
 app.get('/', (req, res) => {
   logger.info('Home endpoint accessed');
-  
+
   res.json({
     message: 'Node.js Log-Trace Correlation Demo',
     endpoints: [
@@ -54,40 +54,40 @@ app.get('/', (req, res) => {
 // Get user by email
 app.get('/users/:email', async (req, res) => {
   const { email } = req.params;
-  
+
   logger.info('Fetching user data', { email });
-  
+
   try {
     // Simulate some processing time
     await new Promise(resolve => setTimeout(resolve, Math.random() * 100));
-    
+
     const user = USERS[email];
-    
+
     if (!user) {
       logger.warn('User not found', { email });
       return res.status(404).json({ error: 'User not found' });
     }
-    
+
     if (!user.active) {
       logger.warn('Attempt to access inactive user', { email, userId: user.id });
       return res.status(403).json({ error: 'User account is inactive' });
     }
-    
-    logger.info('User data retrieved successfully', { 
-      email, 
+
+    logger.info('User data retrieved successfully', {
+      email,
       userId: user.id,
-      userName: user.name 
+      userName: user.name
     });
-    
+
     res.json({ user });
-    
+
   } catch (error) {
-    logger.error('Error fetching user data', { 
-      email, 
+    logger.error('Error fetching user data', {
+      email,
       error: error.message,
       stack: error.stack
     });
-    
+
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -95,41 +95,41 @@ app.get('/users/:email', async (req, res) => {
 // Get orders for a user
 app.get('/orders/:userId', async (req, res) => {
   const userId = parseInt(req.params.userId);
-  
+
   logger.info('Fetching user orders', { userId });
-  
+
   try {
     // Simulate database query time
     await new Promise(resolve => setTimeout(resolve, Math.random() * 200));
-    
+
     const orders = ORDERS[userId];
-    
+
     if (!orders) {
       logger.info('No orders found for user', { userId });
       return res.json({ orders: [] });
     }
-    
+
     // Simulate potential slow operation
     if (Math.random() < 0.3) {
       logger.warn('Slow order processing detected', { userId });
       await new Promise(resolve => setTimeout(resolve, 500));
     }
-    
-    logger.info('Orders retrieved successfully', { 
-      userId, 
+
+    logger.info('Orders retrieved successfully', {
+      userId,
       orderCount: orders.length,
       totalAmount: orders.reduce((sum, order) => sum + order.amount, 0)
     });
-    
+
     res.json({ orders });
-    
+
   } catch (error) {
-    logger.error('Error fetching orders', { 
-      userId, 
+    logger.error('Error fetching orders', {
+      userId,
       error: error.message,
       stack: error.stack
     });
-    
+
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -137,9 +137,9 @@ app.get('/orders/:userId', async (req, res) => {
 // Simulate error endpoint for testing
 app.get('/simulate-error', (req, res) => {
   const errorType = req.query.type || 'generic';
-  
+
   logger.info('Simulating error', { errorType });
-  
+
   if (errorType === 'timeout') {
     logger.warn('Simulating timeout scenario');
     // Don't respond - simulate a timeout
@@ -149,7 +149,7 @@ app.get('/simulate-error', (req, res) => {
     }, 5000);
     return;
   }
-  
+
   if (errorType === 'database') {
     logger.error('Simulating database connection error', {
       database: 'orders_db',
@@ -157,39 +157,39 @@ app.get('/simulate-error', (req, res) => {
     });
     return res.status(503).json({ error: 'Database unavailable' });
   }
-  
+
   // Generic error
-  logger.error('Generic error simulation', { 
+  logger.error('Generic error simulation', {
     errorType,
     randomId: Math.random().toString(36).substring(7)
   });
-  
+
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
 // Health check endpoint
 app.get('/health', (req, res) => {
   logger.info('Health check requested');
-  
+
   const health = {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     memory: process.memoryUsage()
   };
-  
+
   logger.info('Health check completed', { status: health.status });
-  
+
   res.json(health);
 });
 
 // 404 handler
-app.use('*', (req, res) => {
-  logger.warn('Route not found', { 
-    method: req.method, 
-    url: req.originalUrl 
+app.use((req, res) => {
+  logger.warn('Route not found', {
+    method: req.method,
+    url: req.originalUrl
   });
-  
+
   res.status(404).json({ error: 'Route not found' });
 });
 
@@ -201,13 +201,13 @@ app.use((error, req, res, next) => {
     method: req.method,
     url: req.originalUrl
   });
-  
+
   res.status(500).json({ error: 'Internal server error' });
 });
 
 // Start server
 app.listen(PORT, () => {
-  logger.info('Server started successfully', { 
+  logger.info('Server started successfully', {
     port: PORT,
     environment: process.env.NODE_ENV || 'development'
   });
