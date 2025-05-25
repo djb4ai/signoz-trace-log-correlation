@@ -1,11 +1,13 @@
 const winston = require('winston');
 const { trace } = require('@opentelemetry/api');
+const SigNozTransport = require('./winston-otel-transport');
+const { SERVICE_NAME } = require('./config');
 
 // Custom format to add trace context to logs
 const addTraceContext = winston.format((info) => {
   // Get the current active span
   const span = trace.getActiveSpan();
-  
+
   if (span) {
     const spanContext = span.spanContext();
     // Add trace and span IDs to the log entry
@@ -13,7 +15,7 @@ const addTraceContext = winston.format((info) => {
     info.spanId = spanContext.spanId;
     info.traceFlags = spanContext.traceFlags;
   }
-  
+
   return info;
 });
 
@@ -29,7 +31,7 @@ const logger = winston.createLogger({
     winston.format.json()
   ),
   defaultMeta: {
-    service: 'nodejs-log-correlation-demo'
+    service: SERVICE_NAME
   },
   transports: [
     // Console transport for development
@@ -38,26 +40,31 @@ const logger = winston.createLogger({
         winston.format.colorize(),
         winston.format.printf(({ timestamp, level, message, traceId, spanId, ...meta }) => {
           let log = `${timestamp} [${level}]: ${message}`;
-          
+
           // Add trace context to console output for debugging
           if (traceId) {
             log += ` [trace: ${traceId}]`;
           }
-          
+
           // Add any additional metadata
           if (Object.keys(meta).length > 0) {
             log += ` ${JSON.stringify(meta)}`;
           }
-          
+
           return log;
         })
       )
     }),
-    
+
     // File transport for production logs
     new winston.transports.File({
       filename: 'logs/app.log',
       format: winston.format.json() // Keep JSON format for structured logging
+    }),
+
+    // SigNoz transport for logs
+    new SigNozTransport({
+      level: 'info' // Send info level and above to SigNoz
     })
   ]
 });
