@@ -3,7 +3,7 @@
  * Ensures consistent service identification across all telemetry data
  */
 
-const SERVICE_NAME = 'nodejs-log-correlation-demo-3';
+const SERVICE_NAME = 'nodejs-log-correlation-demo';
 const SERVICE_VERSION = '1.0.0';
 
 // SigNoz configuration
