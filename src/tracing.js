@@ -4,8 +4,12 @@ const process = require('process');
 const opentelemetry = require('@opentelemetry/sdk-node');
 const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
 const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http');
+const { OTLPLogExporter } = require('@opentelemetry/exporter-logs-otlp-http');
 const { Resource } = require('@opentelemetry/resources');
-const { SemanticResourceAttributes } = require('@opentelemetry/semantic-conventions');
+// SemanticResourceAttributes now defined in config.js
+const { LoggerProvider, BatchLogRecordProcessor } = require('@opentelemetry/sdk-logs');
+const { logs } = require('@opentelemetry/api-logs');
+const { SERVICE_NAME, SERVICE_VERSION, SIGNOZ_CONFIG, RESOURCE_ATTRIBUTES } = require('./config');
 
 // Load environment variables
 require('dotenv').config();
@@ -14,13 +18,21 @@ require('dotenv').config();
 // https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/exporter.md#specifying-headers-via-environment-variables
 
 const exporterOptions = {
-  url: 'https://ingest.in.signoz.cloud:443/v1/traces',
+  url: SIGNOZ_CONFIG.traces.url,
   headers: {
-    "signoz-access-token": "br2AU5y1pwXrbz8o4kz8ZvNZSL4sz0I0Cmy4"
+    "signoz-access-token": SIGNOZ_CONFIG.accessToken
+  }
+}
+
+const logExporterOptions = {
+  url: SIGNOZ_CONFIG.logs.url,
+  headers: {
+    "signoz-access-token": SIGNOZ_CONFIG.accessToken
   }
 }
 
 const traceExporter = new OTLPTraceExporter(exporterOptions);
+const logExporter = new OTLPLogExporter(logExporterOptions);
 const sdk = new opentelemetry.NodeSDK({
   traceExporter,
   instrumentations: [getNodeAutoInstrumentations({
@@ -29,24 +41,39 @@ const sdk = new opentelemetry.NodeSDK({
       enabled: false
     }
   })],
-  resource: new Resource({
-    [SemanticResourceAttributes.SERVICE_NAME]: 'nodejs-log-correlation-demo',
-    [SemanticResourceAttributes.SERVICE_VERSION]: '1.0.0'
-  })
+  resource: new Resource(RESOURCE_ATTRIBUTES)
 });
 
 // initialize the SDK and register with the OpenTelemetry API
 // this enables the API to record telemetry
 sdk.start()
 
-console.log('🚀 OpenTelemetry tracing initialized successfully');
+// Configure logs provider separately (disabled - using direct HTTP transport)
+// const logResource = new Resource({
+//   [SemanticResourceAttributes.SERVICE_NAME]: 'nodejs-log-correlation-demo',
+//   [SemanticResourceAttributes.SERVICE_VERSION]: '1.0.0'
+// });
+
+// const loggerProvider = new LoggerProvider({
+//   resource: logResource,
+// });
+
+// // Add the OTLP log exporter with batch processor
+// loggerProvider.addLogRecordProcessor(
+//   new BatchLogRecordProcessor(logExporter)
+// );
+
+// // Register the logger provider
+// logs.setGlobalLoggerProvider(loggerProvider);
+
+console.log('🚀 OpenTelemetry tracing and logging initialized successfully');
 
 // gracefully shut down the SDK on process exit
 process.on('SIGTERM', () => {
   sdk.shutdown()
     .then(() => console.log('✅ Tracing SDK shut down successfully'))
-    .catch((error) => console.log('❌ Error shutting down tracing SDK', error))
+    .catch((error) => console.log('❌ Error shutting down SDK', error))
     .finally(() => process.exit(0));
 });
 
-module.exports = sdk;
+module.exports = { sdk, logExporter };
