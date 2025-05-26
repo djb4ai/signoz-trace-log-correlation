@@ -1,25 +1,43 @@
+/*  logger.js  */
 const winston = require('winston');
-const { trace } = require('@opentelemetry/api');
+const Transport = require('winston-transport');
 const https = require('https');
+const { trace } = require('@opentelemetry/api');
 const { SERVICE_NAME, SIGNOZ_CONFIG } = require('./config');
 
-// Custom format to add trace context to logs
-const addTraceContext = winston.format((info) => {
+/* ------------------------------------------------------------------ */
+/*  Custom WINSTON FORMATS                                            */
+/* ------------------------------------------------------------------ */
+
+// 1. Inject the current span context into every log
+const addTraceContext = winston.format(info => {
   const span = trace.getActiveSpan();
   if (span) {
-    const spanContext = span.spanContext();
-    info.traceId = spanContext.traceId;
-    info.spanId = spanContext.spanId;
-    info.traceFlags = spanContext.traceFlags;
+    const ctx = span.spanContext();
+    info.traceId    = ctx.traceId;     // 32-char hex
+    info.spanId     = ctx.spanId;      // 16-char hex
+    info.traceFlags = ctx.traceFlags;  // number 0–255
   }
   return info;
 });
 
-// Custom transport for SigNoz
-class SigNozTransport extends winston.Transport {
+// 2. Remove any stray underscore versions created by other libs
+const removeDuplicateTraceFields = winston.format(info => {
+  delete info.trace_id;
+  delete info.span_id;
+  delete info.trace_flags;
+  return info;
+});
+
+/* ------------------------------------------------------------------ */
+/*  Custom SigNoz Winston Transport                                   */
+/* ------------------------------------------------------------------ */
+class SigNozTransport extends Transport {
   constructor(opts = {}) {
     super(opts);
     this.url = SIGNOZ_CONFIG.logs.url;
+
+    // OTLP HTTP accepts custom headers - we use the SigNoz access token
     this.headers = {
       'Content-Type': 'application/json',
       'signoz-access-token': SIGNOZ_CONFIG.accessToken
@@ -27,156 +45,140 @@ class SigNozTransport extends winston.Transport {
   }
 
   log(info, callback) {
-    setImmediate(() => {
-      this.emit('logged', info);
-    });
+    /* -------------------------------------------------------------- */
+    /*  Convert Winston “info” into an OTLP LogRecord payload         */
+    /* -------------------------------------------------------------- */
+    const levelMap = { error: 17, warn: 13, info: 9, debug: 5, silly: 1 };
+    const now      = Date.now() * 1_000_000;         // ns epoch
+    const sevNum   = levelMap[info.level] ?? 9;
 
-    const severityMap = {
-      error: 17,   // ERROR
-      warn: 13,    // WARN
-      info: 9,     // INFO
-      debug: 5,    // DEBUG
-      silly: 1     // TRACE
+    /* ---- 1. Canonical OpenTelemetry correlation fields (TOP LEVEL) */
+    const logRecord = {
+      timeUnixNano:        now.toString(),
+      observedTimeUnixNano: now.toString(),
+      severityNumber:      sevNum,
+      severityText:        info.level.toUpperCase(),
+      body:                { stringValue: info.message }
     };
 
-    const severity = severityMap[info.level] || 9;
-    const now = Date.now() * 1000000;
+    if (info.traceId)    logRecord.traceId    = info.traceId;
+    if (info.spanId)     logRecord.spanId     = info.spanId;
+    if (info.traceFlags !== undefined) logRecord.traceFlags = info.traceFlags;
 
-    const attributes = {
+    /* ---- 2. Extra attributes (everything else we care about) ----- */
+    const attrs = {
       'service.name': info.service || SERVICE_NAME,
-      'log.level': info.level
+      'log.level':    info.level
     };
 
-    if (info.traceId) {
-      attributes['traceID'] = info.traceId;
-    }
-    if (info.spanId) {
-      attributes['spanID'] = info.spanId;
-    }
-    if (info.traceFlags !== undefined) {
-      attributes['trace_flags'] = info.traceFlags;
-    }
-
-    Object.keys(info).forEach(key => {
-      if (!['level', 'message', 'timestamp', 'service', 'traceId', 'spanId', 'traceFlags'].includes(key)) {
-        attributes[key] = info[key];
+    Object.keys(info).forEach(k => {
+      if (![
+        'level', 'message', 'timestamp',
+        'service', 'traceId', 'spanId', 'traceFlags'
+      ].includes(k)) {
+        attrs[k] = info[k];
       }
     });
 
+    logRecord.attributes = Object.keys(attrs).map(k => ({
+      key:   k,
+      value: { stringValue: String(attrs[k]) }
+    }));
+
+    /* ---- 3. Wrap the record in the OTLP envelope ----------------- */
     const payload = {
       resourceLogs: [{
         resource: {
           attributes: [{
-            key: 'service.name',
+            key:   'service.name',
             value: { stringValue: SERVICE_NAME }
           }]
         },
         scopeLogs: [{
-          scope: {
-            name: 'winston-signoz-transport',
-            version: '1.0.0'
-          },
-          logRecords: [{
-            timeUnixNano: now.toString(),
-            observedTimeUnixNano: now.toString(),
-            severityNumber: severity,
-            severityText: info.level.toUpperCase(),
-            body: {
-              stringValue: info.message
-            },
-            attributes: Object.keys(attributes).map(key => ({
-              key: key,
-              value: { stringValue: String(attributes[key]) }
-            }))
-          }]
+          scope: { name: 'winston-signoz-transport', version: '1.0.0' },
+          logRecords: [logRecord]
         }]
       }]
     };
 
-    this.sendToSigNoz(payload);
-    callback();
+    /* ---- 4. Send -------------------------------------------------- */
+    this._send(payload);
+    callback();          // tell Winston we’re done
   }
 
-  sendToSigNoz(payload) {
+  _send(payload) {
     const data = JSON.stringify(payload);
-    const url = new URL(this.url);
+    const { hostname, port, pathname: path, protocol } = new URL(this.url);
+
     const options = {
-      hostname: url.hostname,
-      port: url.port || 443,
-      path: url.pathname,
-      method: 'POST',
+      hostname,
+      port:     port || (protocol === 'https:' ? 443 : 80),
+      path,
+      method:   'POST',
       headers: {
         ...this.headers,
         'Content-Length': Buffer.byteLength(data)
       }
     };
 
-    const req = https.request(options, (res) => {
-      if (res.statusCode !== 200) {
-        console.error(`SigNoz logs request failed with status: ${res.statusCode}`);
-      }
+    const req = https.request(options, res => {
+      if (res.statusCode !== 200)
+        console.error('[SigNoz transport] HTTP', res.statusCode);
     });
 
-    req.on('error', (error) => {
-      console.error('Error sending logs to SigNoz:', error);
-    });
+    req.on('error', err =>
+      console.error('[SigNoz transport] network error:', err)
+    );
 
     req.write(data);
     req.end();
   }
 }
 
-// Create the Winston logger
+/* ------------------------------------------------------------------ */
+/*  Winston Logger instance                                           */
+/* ------------------------------------------------------------------ */
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
-    winston.format.timestamp({
-      format: 'YYYY-MM-DD HH:mm:ss'
-    }),
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     addTraceContext(),
+    removeDuplicateTraceFields(),
     winston.format.errors({ stack: true }),
     winston.format.json()
   ),
-  defaultMeta: {
-    service: SERVICE_NAME
-  },
+  defaultMeta: { service: SERVICE_NAME },
   transports: [
-    // Console transport for development
+    /* Console – helpful while developing -------------------------- */
     new winston.transports.Console({
       format: winston.format.combine(
         winston.format.colorize(),
-        winston.format.printf(({ timestamp, level, message, traceId, spanId, ...meta }) => {
-          let log = `${timestamp} [${level}]: ${message}`;
-          if (traceId) {
-            log += ` [trace: ${traceId}]`;
+        winston.format.printf(
+          ({ timestamp, level, message, traceId, spanId, ...meta }) => {
+            let out = `${timestamp} [${level}]: ${message}`;
+            if (traceId) out += ` [trace:${traceId}]`;
+            if (Object.keys(meta).length) out += ` ${JSON.stringify(meta)}`;
+            return out;
           }
-          if (Object.keys(meta).length > 0) {
-            log += ` ${JSON.stringify(meta)}`;
-          }
-          return log;
-        })
+        )
       )
     }),
 
-    // File transport for production logs
+    /* Persistent file log (optional) ------------------------------ */
     new winston.transports.File({
       filename: 'logs/app.log',
-      format: winston.format.json()
+      format:   winston.format.json()
     }),
 
-    // SigNoz transport for logs
-    new SigNozTransport({
-      level: 'info'
-    })
+    /* SigNoz transport ------------------------------------------- */
+    new SigNozTransport({ level: 'info' })
   ]
 });
 
-// Handle uncaught exceptions
+/* Handle crashy stuff so they also go to SigNoz / file ------------- */
 logger.exceptions.handle(
   new winston.transports.File({ filename: 'logs/exceptions.log' })
 );
-
-// Handle unhandled promise rejections
 logger.rejections.handle(
   new winston.transports.File({ filename: 'logs/rejections.log' })
 );
